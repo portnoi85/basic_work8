@@ -35,12 +35,12 @@ std::vector<char> hack(const std::vector<char> &original,
    * В качестве доп. задания устраните избыточные вычисления
    */
   const size_t maxVal = std::numeric_limits<uint32_t>::max();
+  const uint32_t BadCRC32 = ~crc32(result.data(), result.size() - 4);
   for (size_t i = 0; i < maxVal; ++i) {
     // Заменяем последние четыре байта на значение i
     replaceLastFourBytes(result, uint32_t(i));
     // Вычисляем CRC32 текущего вектора result
-    auto currentCrc32 = crc32(result.data(), result.size());
-
+    auto currentCrc32 = crc32(result.data() + result.size() -4, 4, BadCRC32);
     if (currentCrc32 == originalCrc32) {
       std::cout << "Success\n";
       return result;
