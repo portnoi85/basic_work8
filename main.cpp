@@ -4,6 +4,7 @@
 #include <vector>
 #include <thread>
 #include <mutex>
+#include <chrono>
 
 #include "CRC32.hpp"
 #include "IO.hpp"
@@ -49,6 +50,38 @@ void findcrc(CalcData data, std::mutex *cout_mutex) {
   return;
 }
 
+unsigned int optimization(CalcData data, std::mutex *cout_mutex) {
+  bool findTreadCount = true;
+  unsigned int t = 0;
+  std::chrono::duration<double> calcPrev;
+  while ( (!data.sucsess) && (findTreadCount)) {
+    std::vector<std::thread> threads;
+    ++t;
+    std::cout << "count threads = " << t << std::endl;
+    auto start = std::chrono::steady_clock::now();
+    for (size_t j = 0; j < t ; ++j) {
+      data.begin = t == 1 ? 0 : data.begin + 30000000;
+      data.end = data.begin + 30000000;
+      threads.emplace_back(findcrc, data, cout_mutex);
+    }
+    for (auto &t : threads) {
+      t.join();
+    }
+    auto end = std::chrono::steady_clock::now();
+    std::chrono::duration<double> calcTime = (end - start) / t; //время, необходимое для провреки 3e7 значений
+    std::cout << "time(" << t << " threads) = " << calcTime.count() << std::endl;;
+    if ((t > 1) && (calcPrev < calcTime)) {
+      findTreadCount = false;
+      --t;
+      std::cout << "optimal count threads = " << t << std::endl;;
+    } else {
+      calcPrev = calcTime;
+    }
+  }
+
+  return t;
+}
+
 /**
  * @brief Формирует новый вектор с тем же CRC32, добавляя в конец оригинального
  * строку injection и дополнительные 4 байта
@@ -70,23 +103,29 @@ std::vector<char> hack(const std::vector<char> &original,
   const uint32_t badCrc32 = ~crc32(result.data(), result.size() - 4);
   std::mutex cout_mutex;
   const size_t maxVal = std::numeric_limits<uint32_t>::max();
-  unsigned int t = std::thread::hardware_concurrency();
+//  unsigned int t = std::thread::hardware_concurrency();
+  
   bool sucsess = false;
   std::vector<std::thread> threads;
-  threads.reserve(t);
 
   CalcData data {0, 0, originalCrc32, badCrc32, sucsess, result};
-  size_t step = maxVal / t;
+  
+  unsigned int t = optimization(data, &cout_mutex);
+  if (sucsess) {
+    return result;
+  }
+
+  size_t MinVal =data.end;
+  size_t step = (maxVal - MinVal) / t;
   for (size_t j = 0; j < t ; ++j) {
-    data.begin = step * j;
-    data.end = (j + 1 < t ) ? (step * (j + 1)) : maxVal;
+    data.begin = MinVal + step * j;
+    data.end = (j + 1 < t ) ? (MinVal + step * (j + 1)) : maxVal;
     threads.emplace_back(findcrc, data, &cout_mutex);
   }
   for (auto &t : threads) {
     t.join();
   }
   if (sucsess) {
-//    std::cout << "Success" << std::endl;
     return result;
   }
   throw std::logic_error("Can't hack");
@@ -98,7 +137,7 @@ int main(int argc, char **argv) {
               << " <input file> <output file>\n";
     return 1;
   }
-
+  auto start = std::chrono::steady_clock::now();
   try {
     const std::vector<char> data = readFromFile(argv[1]);
     const std::vector<char> badData = hack(data, "He-he-he");
@@ -107,5 +146,8 @@ int main(int argc, char **argv) {
     std::cerr << ex.what() << '\n';
     return 2;
   }
+  auto end = std::chrono::steady_clock::now();
+  std::chrono::duration<double> elapsed = end - start;
+  std::cout << "time= " << elapsed.count() * 2 << std::endl;
   return 0;
 }
