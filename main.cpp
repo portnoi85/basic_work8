@@ -1,10 +1,12 @@
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <iostream>
 #include <limits>
-#include <vector>
-#include <thread>
 #include <mutex>
-#include <chrono>
+#include <thread>
+#include <vector>
+
 
 #include "CRC32.hpp"
 #include "IO.hpp"
@@ -14,8 +16,7 @@ struct CalcData {
   size_t end;
   uint32_t originalCrc32;
   uint32_t badCrc32;
-  bool &sucsess;
-  std::vector<char> &result;
+  std::atomic_uint64_t &result;
 };
 
 /// @brief Переписывает последние 4 байта значением value
@@ -25,21 +26,18 @@ void replaceLastFourBytes(std::vector<char> &data, uint32_t value) {
 
 void findcrc(CalcData data, std::mutex *cout_mutex) {
   std::vector<char> buff(4);
-  buff.reserve(4);
-  for (size_t i = data.begin; i < data.end; ++i) {
+  for (uint64_t i = data.begin; i < data.end; ++i) {
     // Заменяем четыре байта переменной buff на значение i
     replaceLastFourBytes(buff, uint32_t(i));
     // Вычисляем CRC32 с учетом ранее рассчитанного значения.
     auto currentCrc32 = crc32(buff.data(), 4, data.badCrc32);
     if (currentCrc32 == data.originalCrc32) {
-      std::cout << "Success\n";
-      data.sucsess = true;
-      replaceLastFourBytes(data.result, uint32_t(i));
+      data.result = i;
       return;
     }
     // Отображаем прогресс
     if (i % 10000000 == 0) {
-      if (data.sucsess)
+      if (data.result != UINT64_MAX)
         return;
       std::lock_guard<std::mutex> guard(*cout_mutex);
       std::cout << "progress[" << std::this_thread::get_id() << "]: "
@@ -54,7 +52,7 @@ unsigned int optimization(CalcData data, std::mutex *cout_mutex) {
   bool findTreadCount = true;
   unsigned int t = 0;
   std::chrono::duration<double> calcPrev;
-  while ( (!data.sucsess) && (findTreadCount)) {
+  while ( (data.result == UINT64_MAX) && (findTreadCount)) {
     std::vector<std::thread> threads;
     ++t;
     std::cout << "count threads = " << t << std::endl;
@@ -65,7 +63,9 @@ unsigned int optimization(CalcData data, std::mutex *cout_mutex) {
       threads.emplace_back(findcrc, data, cout_mutex);
     }
     for (auto &t : threads) {
-      t.join();
+      if (t.joinable()) {
+        t.join();
+      }
     }
     auto end = std::chrono::steady_clock::now();
     std::chrono::duration<double> calcTime = (end - start) / t; //время, необходимое для провреки 3e7 значений
@@ -100,18 +100,19 @@ std::vector<char> hack(const std::vector<char> &original,
   std::copy(injection.begin(), injection.end(), it);
 
   const uint32_t originalCrc32 = crc32(original.data(), original.size());
-  const uint32_t badCrc32 = ~crc32(result.data(), result.size() - 4);
+  const uint32_t badCrc32 = ~crc32(injection.data(), injection.size(), ~originalCrc32);
   std::mutex cout_mutex;
   const size_t maxVal = std::numeric_limits<uint32_t>::max();
-//  unsigned int t = std::thread::hardware_concurrency();
   
-  bool sucsess = false;
+  std::atomic_uint64_t hack_val(UINT64_MAX);
   std::vector<std::thread> threads;
 
-  CalcData data {0, 0, originalCrc32, badCrc32, sucsess, result};
+  CalcData data {0, 0, originalCrc32, badCrc32, hack_val};
   
   unsigned int t = optimization(data, &cout_mutex);
-  if (sucsess) {
+  if (hack_val != UINT64_MAX) {
+    std::cout << "Success\n";
+    replaceLastFourBytes(result, static_cast<uint32_t>(hack_val));
     return result;
   }
 
@@ -123,9 +124,13 @@ std::vector<char> hack(const std::vector<char> &original,
     threads.emplace_back(findcrc, data, &cout_mutex);
   }
   for (auto &t : threads) {
-    t.join();
+    if (t.joinable()) {
+      t.join();
+    }
   }
-  if (sucsess) {
+  if (hack_val != UINT64_MAX) {
+    std::cout << "Success\n";
+    replaceLastFourBytes(result, static_cast<uint32_t>(hack_val));
     return result;
   }
   throw std::logic_error("Can't hack");
